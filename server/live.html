@@ -1,0 +1,19 @@
+<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>צפייה חיה</title>
+<style>body{margin:0;background:#08090c;color:#d7dbe2;font-family:system-ui;padding:12px}
+img{width:100%;border-radius:10px;border:1px solid #232833;display:block;margin-bottom:10px}
+h3{font-size:13px;font-weight:500;color:#8891a1;margin:14px 0 6px}</style></head><body>
+<h3>מסך</h3><img id="s">
+<h3>מצלמה קדמית</h3><img id="c1">
+<h3>מצלמה אחורית</h3><img id="c2">
+<script>
+const DEV="__DEV__",W=(location.protocol==="https:"?"wss://":"ws://")+location.host;
+const ws=new WebSocket(`${W}/ws/live/${DEV}`);
+ws.binaryType="arraybuffer";
+ws.onmessage=e=>{
+  const b=new Uint8Array(e.data), tag=b[0], jpg=b.slice(1);
+  const url=URL.createObjectURL(new Blob([jpg],{type:"image/jpeg"}));
+  const el=[document.getElementById("s"),document.getElementById("c1"),document.getElementById("c2")][tag];
+  if(el){const old=el.dataset.u;el.src=url;el.dataset.u=url;if(old)setTimeout(()=>URL.revokeObjectURL(old),3000)}
+};
+</script></body></html>
